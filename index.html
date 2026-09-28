@@ -181,7 +181,8 @@ nav.tabs svg{width:22px;height:22px}
 /* ================= constants ================= */
 const LS_DB = 'wihe.db.v1', LS_GH = 'wihe.gh.v1', LS_UI = 'wihe.ui.v1';
 const COLORS = {'食品/飲品':'#2E6A4E','家品':'#B7812A','日用品':'#3B6EA5','交通':'#7A5AA6','娛樂':'#C4577A','保健品':'#3F8F89','旅行':'#CC6F2A','其他':'#7D827B',
-  '供樓':'#4A5A52','管理費':'#8A7A5A','水電煤':'#3B6EA5','差餉':'#9A6A4A','上網/訂閱':'#C4577A','維修費':'#7A5AA6','其他固定':'#7D827B'};
+  '供樓':'#4A5A52','管理費':'#8A7A5A','水電煤':'#3B6EA5','差餉':'#9A6A4A','上網/訂閱':'#C4577A','維修費':'#7A5AA6','其他固定':'#7D827B',
+  'BO':'#3B6EA5','BB':'#C4577A','傢私':'#8A6A3A','電器':'#3F8F89','裝修':'#9A6A4A','傢俬材料/工具':'#B7812A'};
 const PALETTE = ['#2E6A4E','#B7812A','#3B6EA5','#7A5AA6','#C4577A','#3F8F89','#CC6F2A','#7D827B'];
 const WEEK = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
 const DEFAULT_SETTINGS = {
@@ -190,6 +191,9 @@ const DEFAULT_SETTINGS = {
   cats: ['食品/飲品','家品','日用品','交通','娛樂','保健品','旅行','其他'],
   fixedCats: ['供樓','管理費','水電煤','差餉','上網/訂閱','維修費','其他固定'],
   quick: ['買餸','菜','肉','水果','雞蛋','麵包','咖啡豆','Aeon','外出食飯'],
+  depQuick: ['銀行回贈','旅行FUND','利息'],
+  furnCats: ['傢私','電器'],
+  renoCats: ['裝修','傢俬材料/工具'],
   fixed: [
     {id:'mortgage', name:'供樓', amount:20665, day:25, cat:'供樓', on:true, start:'2026-10'},
     {id:'mgmt', name:'管理費', amount:1261, day:7, cat:'管理費', on:true, start:'2026-10'},
@@ -342,16 +346,32 @@ function ago(ts){ const s = (Date.now()-ts)/1000; if(s < 60) return '啱啱'; if
 
 /* ================= UI state ================= */
 const UI = Object.assign({ tab:'entry', statsYm: thisYm(), exTravel:false, listYm: thisYm(), listType:'all', q:'' }, lsGet(LS_UI, {}));
-const E = { expr:'', item:'', cat:'食品/飲品', type:'daily', rmb:false, date: today(), saved:false };
+const E = { expr:'', item:'', cat:'食品/飲品', type:'daily', acct:'銀行戶口', rmb:false, date: today(), saved:false };
 if(UI.statsYm > thisYm()) UI.statsYm = thisYm();
 function saveUI(){ lsSet(LS_UI, { tab: UI.tab, exTravel: UI.exTravel }); }
 function go(tab){ UI.tab = tab; saveUI(); renderAll(); window.scrollTo(0,0); }
 
 /* ================= aggregates ================= */
+const PEOPLE = [['BO','Wilson (BO)'],['BB','Icy (BB)'],['其他','其他']];
+const ACCTS = ['銀行戶口','現金POOL'];
+const TYPES = { daily:'日常開支', fixed:'固定/帳單', deposit:'存入', furniture:'傢私+電器', reno:'裝修工程' };
+const personName = c => (PEOPLE.find(p => p[0] === c) || [c, c])[1];
+function catsFor(type){
+  const s = set();
+  if(type === 'fixed') return s.fixedCats;
+  if(type === 'deposit') return PEOPLE.map(p => p[0]);
+  if(type === 'furniture') return s.furnCats;
+  if(type === 'reno') return s.renoCats;
+  return s.cats;
+}
+const catLabel = (type, c) => type === 'deposit' ? personName(c) : c;
+const isExpense = r => r.type !== 'deposit';
 function agg(ym, exTravel){
-  const a = { daily:0, fixed:0, cats:{}, fcats:{}, n:0, max:null, fixedRecs:[], any:false };
+  const a = { daily:0, fixed:0, cats:{}, fcats:{}, n:0, max:null, fixedRecs:[], any:false, dep:0, depBy:{}, depAcct:{}, depRecs:[] };
   for(const r of DB.records){
     if(r.deleted || r.date.slice(0,7) !== ym) continue;
+    if(r.type === 'deposit'){ a.dep += r.amount; a.depBy[r.cat] = (a.depBy[r.cat]||0) + r.amount; const ac = r.acct || '銀行戶口'; a.depAcct[ac] = (a.depAcct[ac]||0) + r.amount; a.depRecs.push(r); continue; }
+    if(r.type === 'furniture' || r.type === 'reno') continue;   // one-off projects: kept out of monthly analysis
     a.any = true;
     if(r.type === 'fixed'){ a.fixed += r.amount; a.fcats[r.cat] = (a.fcats[r.cat]||0) + r.amount; a.fixedRecs.push(r); continue; }
     if(exTravel && r.cat === '旅行') continue;
@@ -361,7 +381,17 @@ function agg(ym, exTravel){
   a.total = a.daily + a.fixed;
   return a;
 }
-function firstYm(){ let m = thisYm(); for(const r of DB.records) if(!r.deleted && r.date.slice(0,7) < m) m = r.date.slice(0,7); return m; }
+function depTotals(){
+  const t = { all:0, by:{}, acct:{}, year:0, yearBy:{} }, y = thisYm().slice(0,4);
+  for(const r of DB.records){
+    if(r.deleted || r.type !== 'deposit') continue;
+    t.all += r.amount; t.by[r.cat] = (t.by[r.cat]||0) + r.amount;
+    const ac = r.acct || '銀行戶口'; t.acct[ac] = (t.acct[ac]||0) + r.amount;
+    if(r.date.slice(0,4) === y){ t.year += r.amount; t.yearBy[r.cat] = (t.yearBy[r.cat]||0) + r.amount; }
+  }
+  return t;
+}
+function firstYm(){ let m = thisYm(); for(const r of DB.records) if(!r.deleted && (r.type === 'daily' || r.type === 'fixed' || r.type === 'deposit') && r.date.slice(0,7) < m) m = r.date.slice(0,7); return m; }
 function delta(cur, prev, pct=true){
   if(prev == null) return '<span class="muted">—</span>';
   const d = cur - prev; if(Math.abs(d) < 0.5) return '<span class="muted">持平</span>';
@@ -374,54 +404,62 @@ function renderEntry(){
   const s = set(), d = new Date(E.date+'T00:00:00'), isToday = E.date === today();
   const cm = agg(thisYm()), dayNo = Number(today().slice(8));
   const total = evalExpr(E.expr), rate = Number(s.rmbRate) || 1.09;
-  const cats = E.type === 'fixed' ? s.fixedCats : s.cats;
+  const dep = E.type === 'deposit';
+  const cats = catsFor(E.type);
   if(!cats.includes(E.cat)) E.cat = cats[0];
-  const dayRecs = live().filter(r => r.date === E.date).sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
-  const dayTotal = dayRecs.reduce((t,r) => t + r.amount, 0);
+  const dayRecs = live().filter(r => r.date === E.date && r.type !== 'furniture' && r.type !== 'reno').sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+  const dayTotal = dayRecs.filter(isExpense).reduce((t,r) => t + r.amount, 0);
+  const dayDep = dayRecs.filter(r => !isExpense(r)).reduce((t,r) => t + r.amount, 0);
   const showRes = E.rmb || E.expr.includes('+');
   const keys = [['7'],['8'],['9'],['del','⌫','刪除一位','op'],['4'],['5'],['6'],['+','+','加','op'],['1'],['2'],['3'],['rmb','¥','人民幣',E.rmb?'on':'op'],['.'],['0'],['C','C','清除','op'],['save','儲存','儲存','save']];
   $('#v-entry').innerHTML = `
   <div class="e-head">
     <div><div class="muted" style="font-size:13px">${isToday ? WEEK[d.getDay()] : '記錄日期 · '+WEEK[d.getDay()]}</div><div class="e-date">${d.getMonth()+1}月${d.getDate()}日</div></div>
-    <div style="text-align:right"><div class="muted" style="font-size:12px">本月日常</div><div class="num" style="font-size:20px;font-weight:700">${money1(cm.daily)}</div><div class="muted" style="font-size:12px">日均 ${money(cm.daily/dayNo)}</div></div>
+    ${dep ? `<div style="text-align:right"><div class="muted" style="font-size:12px">本月存入</div><div class="num" style="font-size:20px;font-weight:700;color:var(--accent)">${money(cm.dep)}</div><div class="muted" style="font-size:12px">本月總開支 ${money(cm.total)}</div></div>`
+          : `<div style="text-align:right"><div class="muted" style="font-size:12px">本月日常</div><div class="num" style="font-size:20px;font-weight:700">${money1(cm.daily)}</div><div class="muted" style="font-size:12px">日均 ${money(cm.daily/dayNo)}</div></div>`}
   </div>
   <div class="card amt-card">
     <div style="display:flex;gap:8px">
       <label for="eItem" class="sr">項目</label>
-      <input id="eItem" class="field" style="flex-grow:1;min-width:0;height:42px" value="${esc(E.item)}" placeholder="項目（可留空）" autocomplete="off" enterkeyhint="done">
+      <input id="eItem" class="field" style="flex-grow:1;min-width:0;height:42px" value="${esc(E.item)}" placeholder="${dep ? '備註（可留空）' : '項目（可留空）'}" autocomplete="off" enterkeyhint="done">
       <label for="eDate" class="sr">日期</label>
       <input id="eDate" type="date" class="field" style="width:142px;height:42px;padding:0 8px" value="${E.date}">
     </div>
     <div class="amt-row">
-      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0"><span class="dot" style="width:10px;height:10px;border-radius:5px;background:${color(E.cat)}"></span><span class="muted" style="font-size:14px">${esc(E.cat)}</span></div>
-      <div style="display:flex;align-items:baseline;gap:4px;min-width:0"><span class="muted" style="font-size:18px">${E.rmb?'¥':'HK$'}</span><span class="amt" id="amt">${E.expr ? esc(E.expr.replace(/\+/g,' + ')) : '0'}</span></div>
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0"><span class="dot" style="width:10px;height:10px;border-radius:5px;background:${color(E.cat)}"></span><span class="muted" style="font-size:14px">${esc(catLabel(E.type, E.cat))}${dep ? ' → '+esc(E.acct) : ''}</span></div>
+      <div style="display:flex;align-items:baseline;gap:4px;min-width:0"><span class="muted" style="font-size:18px">${E.rmb?'¥':'HK$'}</span><span class="amt" id="amt"${dep ? ' style="color:var(--accent)"' : ''}>${E.expr ? esc(E.expr.replace(/\+/g,' + ')) : '0'}</span></div>
     </div>
     ${showRes ? `<div style="text-align:right;font-size:14px;color:var(--accent);font-weight:500">= HK$${E.rmb ? r2(total*rate)+'（¥'+r2(total)+' × '+rate+'）' : r2(total)}</div>` : ''}
     <div class="kbd-hint muted" style="display:none;font-size:12px">鍵盤：直接打數字同「+」，Enter 儲存，Esc 清除</div>
   </div>
-  <div style="display:flex;justify-content:space-between;align-items:center;padding-top:12px">
-    <div class="seg" role="group" aria-label="開支類型">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding-top:12px;gap:8px">
+    <div class="seg" role="group" aria-label="記錄類型">
       <button type="button" data-type="daily" aria-pressed="${E.type==='daily'}">日常開支</button>
       <button type="button" data-type="fixed" aria-pressed="${E.type==='fixed'}">固定/帳單</button>
+      <button type="button" data-type="deposit" aria-pressed="${dep}">存入</button>
     </div>
-    ${E.saved ? '<span style="font-size:13px;color:var(--accent);font-weight:500">已記低 ✓</span>' : ''}
+    ${E.saved ? '<span style="font-size:13px;color:var(--accent);font-weight:500;white-space:nowrap">已記低 ✓</span>' : ''}
   </div>
   ${E.type === 'daily' ? `<div class="quick">${s.quick.map(q => `<button type="button" class="chip" data-quick="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
-  <div class="cats">${cats.map(c => `<button type="button" class="cat" data-cat="${esc(c)}" aria-pressed="${c===E.cat}"><span class="dot" style="background:${color(c)}"></span><span>${esc(c)}</span></button>`).join('')}</div>
+  ${dep ? `<div class="quick">${s.depQuick.map(q => `<button type="button" class="chip" data-dquick="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
+  <div class="cats"${dep ? ' style="grid-template-columns:repeat(3,minmax(0,1fr))"' : ''}>${cats.map(c => `<button type="button" class="cat" data-cat="${esc(c)}" aria-pressed="${c===E.cat}"><span class="dot" style="background:${color(c)}"></span><span>${esc(catLabel(E.type, c))}</span></button>`).join('')}</div>
+  ${dep ? `<div style="display:flex;align-items:center;gap:10px;padding-top:10px"><span class="muted" style="font-size:13px">存入去</span><div class="seg" role="group" aria-label="存入去邊">${ACCTS.map(a => `<button type="button" data-acct="${a}" aria-pressed="${a===E.acct}">${a}</button>`).join('')}</div></div>` : ''}
   <div class="keys">${keys.map(k => `<button type="button" class="key ${k[3]||''}" data-key="${k[0]}" aria-label="${k[2]||k[0]}">${k[1]||k[0]}</button>`).join('')}</div>
   <div class="card" style="margin-top:16px;padding:14px 16px">
     <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:6px">
       <h2 style="font-size:15px">${isToday ? '今日記錄' : (d.getMonth()+1)+'月'+d.getDate()+'日記錄'}</h2>
-      <div class="muted" style="font-size:13px">合計 <span class="num" style="font-size:16px;font-weight:700;color:var(--ink)">${money1(dayTotal)}</span></div>
+      <div class="muted" style="font-size:13px">${dayDep ? '存入 <span class="num" style="color:var(--accent);font-weight:700">'+money(dayDep)+'</span> · ' : ''}支出 <span class="num" style="font-size:16px;font-weight:700;color:var(--ink)">${money1(dayTotal)}</span></div>
     </div>
     <div class="rows">${dayRecs.length ? dayRecs.map(r => rowHtml(r)).join('') : '<div class="empty" style="padding:10px 0">未有記錄</div>'}</div>
   </div>`;
 }
 function rowHtml(r, showDate){
+  const dep = r.type === 'deposit';
+  const tag = r.type === 'fixed' ? ' · 固定' : r.type === 'furniture' ? ' · 傢私+電器' : r.type === 'reno' ? ' · 裝修' : '';
   return `<button type="button" class="row" data-edit="${esc(r.id)}">
     <span class="dot" style="background:${color(r.cat)}"></span>
-    <span class="grow"><span class="ell">${esc(r.item || r.cat)}</span><span class="sub">${showDate ? esc(r.date.slice(5).replace('-','/'))+' · ' : ''}${esc(r.cat)}${r.type==='fixed'?' · 固定':''}${r.rmb?' · ¥'+r.rmb:''}${r.auto?' · 自動':''}</span></span>
-    <span class="amtx">${money1(r.amount)}</span></button>`;
+    <span class="grow"><span class="ell">${esc(r.item || r.cat)}</span><span class="sub">${showDate ? esc(r.date.slice(5).replace('-','/'))+' · ' : ''}${dep ? esc(personName(r.cat))+' → '+esc(r.acct||'銀行戶口') : esc(r.cat)+tag}${r.rmb?' · ¥'+r.rmb:''}${r.auto?' · 自動':''}</span></span>
+    <span class="amtx"${dep ? ' style="color:var(--accent)"' : ''}>${dep ? '+' : ''}${money1(r.amount)}</span></button>`;
 }
 function keyPress(k){
   let e = E.expr; E.saved = false;
@@ -443,18 +481,39 @@ function keyPress(k){
 function saveEntry(){
   const total = evalExpr(E.expr);
   if(!(total > 0)) { toast('請輸入金額'); return; }
-  const rate = Number(set().rmbRate) || 1.09;
-  const rec = { id: uid(), date: E.date, item: (E.item||'').trim() || E.cat, amount: r2(E.rmb ? total*rate : total), cat: E.cat, type: E.type };
+  const rate = Number(set().rmbRate) || 1.09, dep = E.type === 'deposit';
+  let item = (E.item||'').trim();
+  if(!item) item = dep ? (E.cat === '其他' ? '其他收入' : '存入資金') : E.cat;
+  const rec = { id: uid(), date: E.date, item, amount: r2(E.rmb ? total*rate : total), cat: E.cat, type: E.type };
+  if(dep) rec.acct = E.acct;
   if(E.rmb) rec.rmb = r2(total);
   if(E.expr.includes('+')) rec.calc = E.expr;
   upsert(rec); persist();
   E.expr = ''; E.item = ''; E.rmb = false; E.saved = true;
   if(E.type === 'daily') E.cat = set().cats[0];
   renderAll();
-  toast('已儲存 '+money1(rec.amount)+' · '+rec.item);
+  toast((dep ? '已記低存入 ' : '已儲存 ')+money1(rec.amount)+' · '+(dep ? personName(rec.cat) : rec.item));
 }
 
 /* ================= render: stats ================= */
+function depCard(ym){
+  const a = agg(ym), p = agg(addYm(ym,-1)), T = depTotals();
+  const net = a.dep - a.total;
+  const line = (label, v, c) => `<div style="display:flex;align-items:center;gap:8px;font-size:14px;padding:3px 0"><span class="dot" style="background:${c}"></span><span style="flex-grow:1">${label}</span><span class="num" style="font-weight:600">${money(v)}</span></div>`;
+  return `<div class="card sec">
+    <div style="display:flex;justify-content:space-between;align-items:baseline"><h2>存入</h2><div class="num" style="font-size:18px;font-weight:700;color:var(--accent)">${money(a.dep)}</div></div>
+    <div class="muted" style="font-size:12px;margin-top:-6px">上月 ${money(p.dep)} · 本月結餘（存入 − 總開支）<span class="${net >= 0 ? 'down' : 'up'}" style="font-weight:700">${net >= 0 ? '+' : '−'}${money(Math.abs(net))}</span></div>
+    <div class="g2" style="gap:16px">
+      <div>${PEOPLE.map(([k,n]) => line(n, a.depBy[k]||0, color(k))).join('')}</div>
+      <div>${ACCTS.map(ac => line(ac, a.depAcct[ac]||0, ac === '現金POOL' ? '#B7812A' : '#3B6EA5')).join('')}</div>
+    </div>
+    ${a.depRecs.length ? `<div class="rows">${a.depRecs.sort((x,y) => x.date < y.date ? -1 : 1).map(r => rowHtml(r, true)).join('')}</div>` : '<div class="empty" style="padding:4px 0">呢個月未有存入記錄</div>'}
+    <div style="border-top:1px solid var(--line2);padding-top:10px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:14px;font-weight:700">累計存入（全部）</span><span class="num" style="font-size:16px;font-weight:700">${money(T.all)}</span></div>
+      <div class="muted" style="font-size:12px;line-height:1.7">${PEOPLE.map(([k,n]) => n+' '+money(T.by[k]||0)).join(' · ')}<br>${ACCTS.map(ac => ac+' '+money(T.acct[ac]||0)).join(' · ')}<br>${thisYm().slice(0,4)} 年至今 ${money(T.year)}（${PEOPLE.map(([k,n]) => n.split(' ')[0]+' '+money(T.yearBy[k]||0)).join(' · ')}）</div>
+    </div>
+  </div>`;
+}
 function renderStats(){
   const ym = UI.statsYm, ex = UI.exTravel, cur = ym === thisYm();
   const a = agg(ym, ex), p = agg(addYm(ym,-1), ex), ly = agg(addYm(ym,-12), ex);
@@ -520,44 +579,65 @@ function renderStats(){
         <textarea id="mNote" class="field" style="margin-top:6px" rows="2" placeholder="寫低呢個月特別嘅嘢…">${esc(note)}</textarea>
       </div>
     </div>
-  </div>`;
+  </div>
+  ${depCard(ym)}`;
 }
 
 /* ================= render: list ================= */
 function renderList(){
-  const q = UI.q.trim().toLowerCase(), ym = UI.listYm;
-  let rs = live().filter(r => (UI.listType === 'all' || r.type === UI.listType));
-  rs = q ? rs.filter(r => (r.item+' '+r.cat+' '+(r.note||'')).toLowerCase().includes(q)) : rs.filter(r => r.date.slice(0,7) === ym);
+  const q = UI.q.trim().toLowerCase(), ym = UI.listYm, lt = UI.listType;
+  const project = lt === 'furniture' || lt === 'reno';
+  let rs = live().filter(r => (lt === 'all' || r.type === lt));
+  if(q) rs = rs.filter(r => (r.item+' '+r.cat+' '+(r.note||'')+' '+personName(r.cat)).toLowerCase().includes(q));
+  else if(!project) rs = rs.filter(r => r.date.slice(0,7) === ym);
   rs.sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : (b.updatedAt||0)-(a.updatedAt||0));
-  const total = rs.reduce((t,r) => t + r.amount, 0);
+  const exp = rs.filter(isExpense).reduce((t,r) => t + r.amount, 0), dep = rs.filter(r => !isExpense(r)).reduce((t,r) => t + r.amount, 0);
   const groups = []; for(const r of rs){ const g = groups[groups.length-1]; if(g && g.date === r.date) g.items.push(r); else groups.push({ date:r.date, items:[r] }); }
-  const shown = groups.slice(0, 120);
-  $('#v-list').innerHTML = `
-  <div style="display:flex;flex-direction:column;gap:10px;padding-top:8px">
-    <label for="lq" class="sr">搜尋</label>
-    <input id="lq" class="field" type="search" placeholder="搜尋項目（搜尋全部月份）例：Aeon、咖啡豆" value="${esc(UI.q)}">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+  const shown = groups.slice(0, 150);
+  let head;
+  if(project){
+    const byCat = {}; rs.forEach(r => byCat[r.cat] = (byCat[r.cat]||0) + r.amount);
+    head = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div><button type="button" class="btn small" data-lt="all" style="margin-right:8px">‹ 返回</button><span style="font-size:17px;font-weight:700">${TYPES[lt]}</span></div>
+        <button type="button" class="btn small primary" data-new="${lt}">+ 新增</button></div>
+      <div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="muted" style="font-size:13px">${q ? '搜尋結果' : '總計（全部）'} · ${rs.length} 筆</span><span class="num" style="font-size:22px;font-weight:700">${money(exp)}</span></div>
+        ${Object.entries(byCat).sort((a,b) => b[1]-a[1]).map(([c,v]) => `<div style="display:flex;align-items:center;gap:8px;font-size:14px"><span class="dot" style="background:${color(c)}"></span><span style="flex-grow:1">${esc(c)}</span><span class="num">${money(v)}</span></div>`).join('')}
+        <div class="muted" style="font-size:11px">呢類開支唔計入每月分析</div>
+      </div>`;
+  } else {
+    head = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
       ${q ? `<div style="font-size:15px;font-weight:700">搜尋結果</div>` : `<div style="display:flex;align-items:center;gap:8px">
         <button type="button" class="circle" data-lym="-1" aria-label="上個月" style="width:40px;height:40px">‹</button>
         <div style="font-size:16px;font-weight:700;min-width:96px;text-align:center">${ymLabel(ym)}</div>
         <button type="button" class="circle" data-lym="1" aria-label="下個月" style="width:40px;height:40px" ${ym >= thisYm() ? 'disabled' : ''}>›</button></div>`}
       <div class="seg" role="group" aria-label="類型篩選">
-        ${[['all','全部'],['daily','日常'],['fixed','固定']].map(([k,l]) => `<button type="button" data-lt="${k}" aria-pressed="${UI.listType===k}">${l}</button>`).join('')}
+        ${[['all','全部'],['daily','日常'],['fixed','固定'],['deposit','存入']].map(([k,l]) => `<button type="button" data-lt="${k}" aria-pressed="${lt===k}">${l}</button>`).join('')}
       </div>
     </div>
-    <div class="muted" style="font-size:13px">${rs.length} 筆 · 合計 <span class="num" style="color:var(--ink);font-weight:700">${money1(total)}</span></div>
+    <div class="muted" style="font-size:13px">${rs.length} 筆 · 支出 <span class="num" style="color:var(--ink);font-weight:700">${money1(exp)}</span>${dep ? ' · 存入 <span class="num" style="color:var(--accent);font-weight:700">'+money(dep)+'</span>' : ''}</div>`;
+  }
+  $('#v-list').innerHTML = `
+  <div style="display:flex;flex-direction:column;gap:10px;padding-top:8px">
+    <label for="lq" class="sr">搜尋</label>
+    <input id="lq" class="field" type="search" placeholder="搜尋項目（搜尋全部月份）例：Aeon、咖啡豆" value="${esc(UI.q)}">
+    ${head}
   </div>
   <div class="card" style="margin-top:8px;padding:0 16px 8px">
-    ${shown.length ? shown.map(g => { const d = new Date(g.date+'T00:00:00'); const t = g.items.reduce((s,r)=>s+r.amount,0);
-      return `<div class="day-h"><span>${d.getFullYear() !== new Date().getFullYear() ? d.getFullYear()+'年' : ''}${d.getMonth()+1}月${d.getDate()}日 ${WEEK[d.getDay()]}</span><span class="num">${money1(t)}</span></div><div class="rows">${g.items.map(r => rowHtml(r)).join('')}</div>`; }).join('')
+    ${shown.length ? shown.map(g => { const d = new Date(g.date+'T00:00:00'); const t = g.items.filter(isExpense).reduce((s,r)=>s+r.amount,0);
+      return `<div class="day-h"><span>${d.getFullYear() !== new Date().getFullYear() ? d.getFullYear()+'年' : ''}${d.getMonth()+1}月${d.getDate()}日 ${WEEK[d.getDay()]}</span><span class="num">${t ? money1(t) : ''}</span></div><div class="rows">${g.items.map(r => rowHtml(r)).join('')}</div>`; }).join('')
       : '<div class="empty">冇記錄</div>'}
-    ${groups.length > shown.length ? '<div class="empty">只顯示最近 120 日，請收窄搜尋</div>' : ''}
-  </div>`;
+    ${groups.length > shown.length ? '<div class="empty">只顯示最近 150 日，請收窄搜尋</div>' : ''}
+  </div>
+  ${project ? '' : `<div style="display:flex;justify-content:center;gap:4px;align-items:center;padding:14px 0 4px;font-size:13px" class="muted">其他記錄：
+    <button type="button" class="btn small" data-lt="furniture" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">傢私+電器</button>·
+    <button type="button" class="btn small" data-lt="reno" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">裝修工程</button></div>`}`;
 }
 
 /* ================= render: settings ================= */
 function renderSettings(){
   const s = set();
+  const count = t => live().filter(r => r.type === t).length;
   $('#v-settings').innerHTML = `
   <div class="card sec" style="margin-top:8px">
     <div style="display:flex;justify-content:space-between;align-items:center"><h2>GitHub 同步</h2><span class="muted" style="font-size:12px">${DB.lastSync ? '上次同步 '+ago(DB.lastSync) : ''}</span></div>
@@ -593,12 +673,15 @@ function renderSettings(){
     <label for="sCats" class="muted" style="font-size:13px">日常類別（用逗號分隔）</label><input id="sCats" class="field" value="${esc(s.cats.join(', '))}">
     <label for="sFCats" class="muted" style="font-size:13px">固定/帳單類別</label><input id="sFCats" class="field" value="${esc(s.fixedCats.join(', '))}">
     <label for="sQuick" class="muted" style="font-size:13px">常用項目快捷鍵</label><input id="sQuick" class="field" value="${esc(s.quick.join(', '))}">
+    <label for="sDQuick" class="muted" style="font-size:13px">存入「其他」快捷鍵（例如回贈、旅行FUND）</label><input id="sDQuick" class="field" value="${esc(s.depQuick.join(', '))}">
+    <label for="sFurn" class="muted" style="font-size:13px">傢私+電器類別</label><input id="sFurn" class="field" value="${esc(s.furnCats.join(', '))}">
+    <label for="sReno" class="muted" style="font-size:13px">裝修工程類別</label><input id="sReno" class="field" value="${esc(s.renoCats.join(', '))}">
     <div style="display:flex;align-items:center;gap:12px"><label for="sRate" style="font-size:14px;flex-grow:1">人民幣匯率（¥ → HK$）</label><input id="sRate" class="field" style="width:100px" inputmode="decimal" value="${esc(s.rmbRate)}"></div>
   </div>
 
   <div class="card sec">
     <h2>資料</h2>
-    <div class="muted" style="font-size:13px">本機共 ${live().length} 筆記錄（${live().filter(r=>r.type==='daily').length} 日常 · ${live().filter(r=>r.type==='fixed').length} 固定）</div>
+    <div class="muted" style="font-size:13px;line-height:1.6">本機共 ${live().length} 筆記錄：日常 ${count('daily')} · 固定 ${count('fixed')} · 存入 ${count('deposit')} · 傢私+電器 ${count('furniture')} · 裝修 ${count('reno')}</div>
     <div class="g2">
       <button type="button" class="btn" id="dImport">匯入 JSON</button>
       <button type="button" class="btn" id="dJson">匯出 JSON 備份</button>
@@ -608,42 +691,56 @@ function renderSettings(){
     <input type="file" id="dFile" accept=".json,application/json" class="sr" aria-label="揀 JSON 檔">
     <button type="button" class="btn danger small" id="dWipe" style="align-self:flex-start">清除本機資料</button>
   </div>
-  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.0</div>`;
+  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.1</div>`;
 }
 
 /* ================= edit modal ================= */
-let editArm = false;
-function openEdit(id){
-  const r = DB.records.find(x => x.id === id); if(!r) return;
+let editArm = false, editNew = null;
+function catOptions(type, selected){
+  const list = catsFor(type), all = list.includes(selected) || !selected ? list : [selected, ...list];
+  return all.map(c => `<option value="${esc(c)}" ${c===selected?'selected':''}>${esc(catLabel(type, c))}</option>`).join('');
+}
+function openEdit(id, newType){
+  let r;
+  if(newType){ editNew = { id: uid(), date: today(), item:'', amount:0, cat: catsFor(newType)[0], type: newType }; r = editNew; }
+  else { editNew = null; r = DB.records.find(x => x.id === id); if(!r) return; }
   editArm = false;
-  const s = set(), cats = r.type === 'fixed' ? s.fixedCats : s.cats;
-  const catList = cats.includes(r.cat) ? cats : [r.cat, ...cats];
+  const s = set();
   $('#sheet').innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center"><h2 id="editTitle" style="font-size:18px">修改記錄</h2><button type="button" class="x" id="mClose" aria-label="關閉">×</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center"><h2 id="editTitle" style="font-size:18px">${newType ? '新增'+TYPES[newType] : '修改記錄'}</h2><button type="button" class="x" id="mClose" aria-label="關閉">×</button></div>
     <div class="form">
       <label for="mDate">日期</label><input id="mDate" type="date" class="field" value="${esc(r.date)}">
+      <label for="mType">類型</label><select id="mType" class="field">${Object.entries(TYPES).map(([k,l]) => `<option value="${k}" ${k===(r.type||'daily')?'selected':''}>${l}</option>`).join('')}</select>
+      <label for="mCat" id="mCatL">${r.type === 'deposit' ? '存入人' : '類別'}</label><select id="mCat" class="field">${catOptions(r.type, r.cat)}</select>
+      <label for="mAcct" class="acctRow" ${r.type==='deposit'?'':'hidden'}>存入去</label><select id="mAcct" class="field acctRow" ${r.type==='deposit'?'':'hidden'}>${ACCTS.map(a => `<option ${a===(r.acct||'銀行戶口')?'selected':''}>${a}</option>`).join('')}</select>
       <label for="mItem">項目</label><input id="mItem" class="field" value="${esc(r.item)}">
-      <label for="mAmt">港元</label><input id="mAmt" class="field num" inputmode="decimal" value="${esc(r.calc || r.amount)}" style="font-size:18px">
+      <label for="mAmt">港元</label><input id="mAmt" class="field num" inputmode="decimal" value="${esc(r.calc || (r.amount || ''))}" style="font-size:18px">
       <label for="mRmb">人民幣</label><input id="mRmb" class="field" inputmode="decimal" value="${esc(r.rmb ?? '')}" placeholder="選填：填咗會自動 × ${esc(s.rmbRate)}">
-      <label for="mType">類型</label><select id="mType" class="field"><option value="daily" ${r.type!=='fixed'?'selected':''}>日常開支</option><option value="fixed" ${r.type==='fixed'?'selected':''}>固定/帳單</option></select>
-      <label for="mCat">類別</label><select id="mCat" class="field">${[...new Set([...catList, ...(r.type==='fixed'?s.cats:s.fixedCats)])].map(c => `<option ${c===r.cat?'selected':''}>${esc(c)}</option>`).join('')}</select>
       <label for="mNoteR">備註</label><input id="mNoteR" class="field" value="${esc(r.note||'')}">
     </div>
-    <div style="display:flex;gap:8px"><button type="button" class="btn danger" id="mDel">刪除</button><div style="flex-grow:1"></div><button type="button" class="btn" id="mCancel">取消</button><button type="button" class="btn primary" id="mSave">儲存</button></div>`;
-  $('#modal').classList.add('on'); $('#modal').dataset.id = id;
+    <div style="display:flex;gap:8px">${newType ? '' : '<button type="button" class="btn danger" id="mDel">刪除</button>'}<div style="flex-grow:1"></div><button type="button" class="btn" id="mCancel">取消</button><button type="button" class="btn primary" id="mSave">儲存</button></div>`;
+  $('#modal').classList.add('on'); $('#modal').dataset.id = r.id;
   const rmb = $('#mRmb'); rmb.addEventListener('input', () => { const v = evalExpr(rmb.value); if(v > 0) $('#mAmt').value = r2(v*(Number(s.rmbRate)||1.09)); });
-  setTimeout(() => $('#mItem').focus(), 50);
+  $('#mType').addEventListener('change', () => {
+    const t = $('#mType').value; $('#mCat').innerHTML = catOptions(t, null);
+    $('#mCatL').textContent = t === 'deposit' ? '存入人' : '類別';
+    document.querySelectorAll('.acctRow').forEach(el => el.hidden = t !== 'deposit');
+  });
+  setTimeout(() => $(newType ? '#mItem' : '#mItem').focus(), 50);
 }
-function closeEdit(){ $('#modal').classList.remove('on'); }
+function closeEdit(){ $('#modal').classList.remove('on'); editNew = null; }
 function saveEdit(){
-  const id = $('#modal').dataset.id, r = DB.records.find(x => x.id === id); if(!r) return closeEdit();
+  const id = $('#modal').dataset.id, r = editNew || DB.records.find(x => x.id === id); if(!r) return closeEdit();
   const amtStr = $('#mAmt').value.trim(), amt = evalExpr(amtStr);
-  if(!(amt > 0)) return toast('金額唔啱');
-  const n = Object.assign({}, r, { date: $('#mDate').value || r.date, item: $('#mItem').value.trim() || $('#mCat').value, amount: r2(amt), type: $('#mType').value, cat: $('#mCat').value });
+  const type = $('#mType').value;
+  if(!(amt > 0) && !(type === 'furniture' || type === 'reno')) return toast('金額唔啱');
+  const n = Object.assign({}, r, { date: $('#mDate').value || r.date, item: $('#mItem').value.trim() || $('#mCat').value, amount: r2(amt), type, cat: $('#mCat').value });
+  if(type === 'deposit') n.acct = $('#mAcct').value; else delete n.acct;
   if(amtStr.includes('+')) n.calc = amtStr; else delete n.calc;
   const rv = evalExpr($('#mRmb').value); if(rv > 0) n.rmb = r2(rv); else delete n.rmb;
   const nt = $('#mNoteR').value.trim(); if(nt) n.note = nt; else delete n.note;
-  upsert(n); persist(); closeEdit(); renderAll(); toast('已更新');
+  const wasNew = !!editNew;
+  upsert(n); persist(); closeEdit(); renderAll(); toast(wasNew ? '已新增' : '已更新');
 }
 function deleteEdit(){
   if(!editArm){ editArm = true; $('#mDel').textContent = '再撳一次確認刪除'; return; }
@@ -654,17 +751,22 @@ function deleteEdit(){
 
 /* ================= export / import ================= */
 function download(name, blob){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
-function rowsFor(type){ return live().filter(r => r.type === type).sort((a,b) => a.date < b.date ? -1 : 1).map(r => ({ '日期': r.date, '項目': r.item, '港元': r.amount, '人民幣': r.rmb ?? '', '類別': r.cat, 'NOTE': r.note || '' })); }
+function rowsFor(type){
+  return live().filter(r => r.type === type).sort((a,b) => a.date < b.date ? -1 : 1).map(r => type === 'deposit'
+    ? ({ '日期': r.date, '項目': r.item, '金額': r.amount, '存入人': personName(r.cat), '存入去': r.acct || '銀行戶口', 'NOTE': r.note || '' })
+    : ({ '日期': r.date, '項目': r.item, '港元': r.amount, '人民幣': r.rmb ?? '', '類別': r.cat, 'NOTE': r.note || '' }));
+}
 function summaryRows(){
-  const out = []; for(let m = firstYm(); m <= thisYm(); m = addYm(m,1)){ const a = agg(m); if(!a.any) continue;
+  const out = []; for(let m = firstYm(); m <= thisYm(); m = addYm(m,1)){ const a = agg(m); if(!a.any && !a.dep) continue;
     const dc = m === thisYm() ? Number(today().slice(8)) : daysIn(m);
-    out.push({ 'Month': m, '日常開支': r2(a.daily), '固定開支': r2(a.fixed), '總開支': r2(a.total), 'Avg / day': r2(a.total/dc), 'NOTE': (DB.notes[m]&&DB.notes[m].text)||'' }); }
+    out.push({ 'Month': m, '日常開支': r2(a.daily), '固定開支': r2(a.fixed), '總開支': r2(a.total), 'Avg / day': r2(a.total/dc),
+      '存入 BO': r2(a.depBy.BO||0), '存入 BB': r2(a.depBy.BB||0), '存入 其他': r2(a.depBy['其他']||0), '存入合計': r2(a.dep), '結餘': r2(a.dep - a.total), 'NOTE': (DB.notes[m]&&DB.notes[m].text)||'' }); }
   return out;
 }
 function exportCsv(){
   const rows = live().sort((a,b) => a.date < b.date ? -1 : 1);
   const q = v => '"'+String(v ?? '').replace(/"/g,'""')+'"';
-  const csv = '﻿日期,項目,港元,人民幣,類別,類型,NOTE\n' + rows.map(r => [r.date, r.item, r.amount, r.rmb ?? '', r.cat, r.type==='fixed'?'固定':'日常', r.note||''].map(q).join(',')).join('\n');
+  const csv = '﻿日期,項目,港元,人民幣,類別/存入人,類型,存入去,NOTE\n' + rows.map(r => [r.date, r.item, r.amount, r.rmb ?? '', catLabel(r.type, r.cat), TYPES[r.type] || r.type, r.acct || '', r.note||''].map(q).join(',')).join('\n');
   download('home-expense-'+today()+'.csv', new Blob([csv], { type:'text/csv;charset=utf-8' }));
 }
 function loadScript(src){ return new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('載入失敗')); document.head.appendChild(s); }); }
@@ -675,7 +777,10 @@ async function exportXlsx(){
     const add = (name, rows, widths) => { const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = widths.map(w => ({ wch: w })); XLSX.utils.book_append_sheet(wb, ws, name); };
     add('日常開支', rowsFor('daily'), [12,40,10,10,12,20]);
     add('固定開支', rowsFor('fixed'), [12,24,10,10,12,20]);
-    add('每月總結', summaryRows(), [10,12,12,12,10,40]);
+    add('存入', rowsFor('deposit'), [12,24,12,14,12,20]);
+    add('每月總結', summaryRows(), [10,12,12,12,10,10,10,10,12,12,40]);
+    add('傢私+電器', rowsFor('furniture'), [12,50,10,10,10,24]);
+    add('裝修工程', rowsFor('reno'), [12,40,10,10,14,30]);
     XLSX.writeFile(wb, 'Home-Expense-'+today()+'.xlsx');
   } catch(e){ toast('匯出 Excel 失敗，可以用 CSV'); }
 }
@@ -705,6 +810,7 @@ function saveSettingsFromForm(){
   const s = set(), list = v => v.split(/[,，、]/).map(x => x.trim()).filter(Boolean);
   const c = list($('#sCats').value), fc = list($('#sFCats').value), q = list($('#sQuick').value), rate = parseFloat($('#sRate').value);
   if(c.length) s.cats = c; if(fc.length) s.fixedCats = fc; s.quick = q; if(rate > 0) s.rmbRate = rate;
+  s.depQuick = list($('#sDQuick').value); const fu = list($('#sFurn').value), re = list($('#sReno').value); if(fu.length) s.furnCats = fu; if(re.length) s.renoCats = re;
   touchSettings(); persist();
 }
 
@@ -715,7 +821,10 @@ document.addEventListener('click', e => {
   if(t.id === 'syncBtn'){ sync(true); return; }
   if(d.key){ keyPress(d.key); return; }
   if(d.cat){ E.cat = d.cat; renderEntry(); return; }
-  if(d.type){ E.type = d.type; E.cat = (d.type === 'fixed' ? set().fixedCats : set().cats)[0]; renderEntry(); return; }
+  if(d.type){ E.type = d.type; E.cat = catsFor(d.type)[0]; E.saved = false; renderEntry(); return; }
+  if(d.acct){ E.acct = d.acct; renderEntry(); return; }
+  if(d.dquick){ E.item = d.dquick; E.cat = '其他'; E.type = 'deposit'; renderEntry(); return; }
+  if(d.new){ openEdit(null, d.new); return; }
   if(d.quick){ E.item = E.item ? E.item + '、' + d.quick : d.quick; E.cat = set().cats[0]; E.type = 'daily'; renderEntry(); return; }
   if(d.edit){ openEdit(d.edit); return; }
   if(d.ym){ UI.statsYm = addYm(UI.statsYm, Number(d.ym)); renderStats(); return; }
@@ -756,7 +865,7 @@ document.addEventListener('change', e => {
     if(k === 'on') f.on = t.checked; else if(k === 'amount') f.amount = parseFloat(t.value) || 0; else if(k === 'day') f.day = Math.min(31, Math.max(1, parseInt(t.value) || 1)); else f[k] = t.value.trim();
     touchSettings(); persist(); postFixed(); renderSettings();
   }
-  if(['sCats','sFCats','sQuick','sRate'].includes(t.id)){ saveSettingsFromForm(); }
+  if(['sCats','sFCats','sQuick','sRate','sDQuick','sFurn','sReno'].includes(t.id)){ saveSettingsFromForm(); }
   if(t.id === 'dFile' && t.files[0]){ importJson(t.files[0]); t.value = ''; }
 });
 document.addEventListener('keydown', e => {
