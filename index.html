@@ -194,6 +194,7 @@ const DEFAULT_SETTINGS = {
   depQuick: ['銀行回贈','旅行FUND','利息'],
   furnCats: ['傢私','電器'],
   renoCats: ['裝修','傢俬材料/工具'],
+  fund: { capital: 30000, start: '2025-12-01', payout: '每年12月1日' },
   fixed: [
     {id:'mortgage', name:'供樓', amount:20665, day:25, cat:'供樓', on:true, start:'2026-10'},
     {id:'mgmt', name:'管理費', amount:1261, day:7, cat:'管理費', on:true, start:'2026-10'},
@@ -371,7 +372,7 @@ function agg(ym, exTravel){
   for(const r of DB.records){
     if(r.deleted || r.date.slice(0,7) !== ym) continue;
     if(r.type === 'deposit'){ a.dep += r.amount; a.depBy[r.cat] = (a.depBy[r.cat]||0) + r.amount; const ac = r.acct || '銀行戶口'; a.depAcct[ac] = (a.depAcct[ac]||0) + r.amount; a.depRecs.push(r); continue; }
-    if(r.type === 'furniture' || r.type === 'reno') continue;   // one-off projects: kept out of monthly analysis
+    if(r.type === 'furniture' || r.type === 'reno' || r.type === 'fund') continue;   // one-off projects: kept out of monthly analysis
     a.any = true;
     if(r.type === 'fixed'){ a.fixed += r.amount; a.fcats[r.cat] = (a.fcats[r.cat]||0) + r.amount; a.fixedRecs.push(r); continue; }
     if(exTravel && r.cat === '旅行') continue;
@@ -407,7 +408,7 @@ function renderEntry(){
   const dep = E.type === 'deposit';
   const cats = catsFor(E.type);
   if(!cats.includes(E.cat)) E.cat = cats[0];
-  const dayRecs = live().filter(r => r.date === E.date && r.type !== 'furniture' && r.type !== 'reno').sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+  const dayRecs = live().filter(r => r.date === E.date && r.type !== 'furniture' && r.type !== 'reno' && r.type !== 'fund').sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
   const dayTotal = dayRecs.filter(isExpense).reduce((t,r) => t + r.amount, 0);
   const dayDep = dayRecs.filter(r => !isExpense(r)).reduce((t,r) => t + r.amount, 0);
   const showRes = E.rmb || E.expr.includes('+');
@@ -585,9 +586,10 @@ function renderStats(){
 
 /* ================= render: list ================= */
 function renderList(){
+  if(UI.listType === 'fund') return renderFund();
   const q = UI.q.trim().toLowerCase(), ym = UI.listYm, lt = UI.listType;
   const project = lt === 'furniture' || lt === 'reno';
-  let rs = live().filter(r => (lt === 'all' || r.type === lt));
+  let rs = live().filter(r => (lt === 'all' ? r.type !== 'fund' : r.type === lt));
   if(q) rs = rs.filter(r => (r.item+' '+r.cat+' '+(r.note||'')+' '+personName(r.cat)).toLowerCase().includes(q));
   else if(!project) rs = rs.filter(r => r.date.slice(0,7) === ym);
   rs.sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : (b.updatedAt||0)-(a.updatedAt||0));
@@ -631,7 +633,8 @@ function renderList(){
   </div>
   ${project ? '' : `<div style="display:flex;justify-content:center;gap:4px;align-items:center;padding:14px 0 4px;font-size:13px" class="muted">其他記錄：
     <button type="button" class="btn small" data-lt="furniture" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">傢私+電器</button>·
-    <button type="button" class="btn small" data-lt="reno" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">裝修工程</button></div>`}`;
+    <button type="button" class="btn small" data-lt="reno" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">裝修工程</button>·
+    <button type="button" class="btn small" data-lt="fund" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">旅行基金</button></div>`}`;
 }
 
 /* ================= render: settings ================= */
@@ -681,7 +684,7 @@ function renderSettings(){
 
   <div class="card sec">
     <h2>資料</h2>
-    <div class="muted" style="font-size:13px;line-height:1.6">本機共 ${live().length} 筆記錄：日常 ${count('daily')} · 固定 ${count('fixed')} · 存入 ${count('deposit')} · 傢私+電器 ${count('furniture')} · 裝修 ${count('reno')}</div>
+    <div class="muted" style="font-size:13px;line-height:1.6">本機共 ${live().length} 筆記錄：日常 ${count('daily')} · 固定 ${count('fixed')} · 存入 ${count('deposit')} · 傢私+電器 ${count('furniture')} · 裝修 ${count('reno')} · 旅行基金 ${count('fund')} 個月</div>
     <div class="g2">
       <button type="button" class="btn" id="dImport">匯入 JSON</button>
       <button type="button" class="btn" id="dJson">匯出 JSON 備份</button>
@@ -691,7 +694,7 @@ function renderSettings(){
     <input type="file" id="dFile" accept=".json,application/json" class="sr" aria-label="揀 JSON 檔">
     <button type="button" class="btn danger small" id="dWipe" style="align-self:flex-start">清除本機資料</button>
   </div>
-  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.1</div>`;
+  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.2</div>`;
 }
 
 /* ================= edit modal ================= */
@@ -728,7 +731,7 @@ function openEdit(id, newType){
   });
   setTimeout(() => $(newType ? '#mItem' : '#mItem').focus(), 50);
 }
-function closeEdit(){ $('#modal').classList.remove('on'); editNew = null; }
+function closeEdit(){ $('#modal').classList.remove('on'); $('#modal').dataset.kind = ''; editNew = null; }
 function saveEdit(){
   const id = $('#modal').dataset.id, r = editNew || DB.records.find(x => x.id === id); if(!r) return closeEdit();
   const amtStr = $('#mAmt').value.trim(), amt = evalExpr(amtStr);
@@ -749,6 +752,110 @@ function deleteEdit(){
   closeEdit(); renderAll(); toast('已刪除');
 }
 
+/* ================= travel fund ================= */
+function fundRows(){
+  const f = set().fund, rows = live().filter(r => r.type === 'fund').sort((a,b) => a.date < b.date ? -1 : 1);
+  let bal = Number(f.capital) || 0, invested = bal, pl = 0;
+  const out = rows.map(r => { const p = Number(r.amount)||0, fl = Number(r.flow)||0; pl += p; invested += fl; bal += p + fl; return { r, bal, prev: bal - p - fl }; });
+  return { rows: out, bal, invested, pl, pct: invested ? pl/invested : 0 };
+}
+function renderFund(){
+  const f = set().fund, F = fundRows(), pos = F.pl >= 0;
+  const maxB = Math.max(1, ...F.rows.map(x => x.bal), Number(f.capital)||0);
+  $('#v-list').innerHTML = `
+  <div style="display:flex;flex-direction:column;gap:10px;padding-top:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div><button type="button" class="btn small" data-lt="all" style="margin-right:8px">‹ 返回</button><span style="font-size:17px;font-weight:700">旅行基金</span></div>
+      <button type="button" class="btn small primary" data-fundnew="1">+ 新增月份</button>
+    </div>
+    <div class="hero">
+      <div class="lbl" style="font-size:14px">總資金</div>
+      <div class="big">${money(F.bal)}</div>
+      <div class="g2">
+        <div class="box"><div class="lbl">累計 P/L</div><div style="font-size:16px;font-weight:700" class="${pos ? 'down' : 'up'}">${pos ? '+' : '−'}${money(Math.abs(F.pl))}（${pos ? '+' : ''}${(F.pct*100).toFixed(2)}%）</div></div>
+        <div class="box"><div class="lbl">投入資金</div><div style="font-size:16px;font-weight:700">${money(F.invested)}</div><div class="lbl">起始 ${money(f.capital)}${F.invested !== Number(f.capital) ? ' · 提取/存入 '+money(F.invested - f.capital) : ''}</div></div>
+      </div>
+    </div>
+    <div class="card sec" style="margin-top:0">
+      <h2>每月走勢</h2>
+      <div class="trend" style="grid-template-columns:repeat(${Math.max(F.rows.length,1)},minmax(0,1fr));gap:6px;height:130px">
+        ${F.rows.map(x => `<button type="button" data-fund="${esc(x.r.id)}" style="height:130px" aria-label="${esc(x.r.date.slice(0,7))} 總資金 ${money(x.bal)}">
+          <span class="v">${(x.bal/1000).toFixed(1)}k</span>
+          <span class="b1" style="height:${Math.round(x.bal/maxB*96)}px;background:${(x.r.amount||0) >= 0 ? '#8DB09C' : '#E2B9AB'};border-radius:4px 4px 2px 2px"></span>
+          <span class="m" style="white-space:nowrap;font-size:11px">${F.rows.length > 8 ? Number(x.r.date.slice(5,7)) : Number(x.r.date.slice(5,7))+'月'}</span></button>`).join('')}
+      </div>
+    </div>
+    <div class="card" style="padding:4px 16px 8px">
+      <div style="display:grid;grid-template-columns:64px 64px minmax(0,1fr) minmax(0,1fr);gap:8px;font-size:12px;padding:10px 0 6px" class="muted"><span>月份</span><span style="text-align:right">%</span><span style="text-align:right">P/L</span><span style="text-align:right">總資金</span></div>
+      ${F.rows.slice().reverse().map(x => { const r = x.r, p = Number(r.amount)||0;
+        return `<button type="button" class="row" data-fund="${esc(r.id)}" style="display:grid;grid-template-columns:64px 64px minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:start">
+          <span>${r.date.slice(2,7).replace('-','/')}</span>
+          <span style="text-align:right" class="${(r.pct||0) >= 0 ? 'down' : 'up'}">${r.pct == null ? '—' : ((r.pct>0?'+':'')+r.pct+'%')}</span>
+          <span style="text-align:right" class="num ${p >= 0 ? 'down' : 'up'}">${p >= 0 ? '+' : '−'}${money(Math.abs(p))}</span>
+          <span style="text-align:right;font-weight:600" class="num">${money(x.bal)}</span>
+          ${(r.flow || r.note) ? `<span class="sub" style="grid-column:1/5;font-size:12px;color:var(--muted)">${r.flow ? (r.flow < 0 ? '提取 ' : '存入 ')+money(Math.abs(r.flow))+(r.note ? ' · ' : '') : ''}${esc(r.note||'')}</span>` : ''}
+        </button>`; }).join('') || '<div class="empty">未有記錄</div>'}
+    </div>
+    <div class="card sec" style="margin-top:0">
+      <h2>基金設定</h2>
+      <div class="form">
+        <label for="fCap">起始資金</label><input id="fCap" class="field" inputmode="decimal" value="${esc(f.capital)}">
+        <label for="fStart">成立日期</label><input id="fStart" class="field" type="date" value="${esc(f.start)}">
+        <label for="fPay">派息日</label><input id="fPay" class="field" value="${esc(f.payout)}">
+      </div>
+      <div class="muted" style="font-size:12px">輸入每月 % 時，P/L 會自動按「上月總資金 × %」計，亦可以自己改金額。提取寫負數（例如 -5000），存入寫正數。旅行基金唔計入每月開支分析。</div>
+    </div>
+  </div>`;
+}
+function openFund(id){
+  const F = fundRows();
+  let r = id ? DB.records.find(x => x.id === id) : null;
+  const last = F.rows.length ? F.rows[F.rows.length-1] : null;
+  const nextYm = last ? addYm(last.r.date.slice(0,7), 1) : (set().fund.start || today()).slice(0,7);
+  if(!r) r = { id: null, date: nextYm+'-01', pct: '', amount: '', flow: '', note: '' };
+  editArm = false;
+  $('#sheet').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center"><h2 id="editTitle" style="font-size:18px">${id ? '修改' : '新增'}旅行基金月份</h2><button type="button" class="x" id="mClose" aria-label="關閉">×</button></div>
+    <div class="form">
+      <label for="fuMonth">月份</label><input id="fuMonth" class="field" type="month" value="${esc(r.date.slice(0,7))}">
+      <label for="fuPct">利潤/虧損 %</label><input id="fuPct" class="field" inputmode="decimal" value="${esc(r.pct ?? '')}" placeholder="例如 12.86 或 -3.5">
+      <label for="fuAmt">P/L 金額</label><input id="fuAmt" class="field num" inputmode="decimal" value="${esc(r.amount ?? '')}" placeholder="自動計，可修改">
+      <label for="fuFlow">提取/存入</label><input id="fuFlow" class="field" inputmode="decimal" value="${esc(r.flow || '')}" placeholder="提取寫負數，例如 -5000">
+      <label for="fuNote">備註</label><input id="fuNote" class="field" value="${esc(r.note||'')}">
+    </div>
+    <div class="muted" style="font-size:12px" id="fuHint"></div>
+    <div style="display:flex;gap:8px">${id ? '<button type="button" class="btn danger" id="fuDel">刪除</button>' : ''}<div style="flex-grow:1"></div><button type="button" class="btn" id="mCancel">取消</button><button type="button" class="btn primary" id="fuSave">儲存</button></div>`;
+  const m = $('#modal'); m.classList.add('on'); m.dataset.id = id || ''; m.dataset.kind = 'fund';
+  const calc = () => {
+    const ym = $('#fuMonth').value, pct = parseFloat($('#fuPct').value);
+    const prevRow = fundRows().rows.filter(x => x.r.date.slice(0,7) < ym).pop();
+    const base = prevRow ? prevRow.bal : Number(set().fund.capital)||0;
+    if(!isNaN(pct)){ $('#fuAmt').value = r2(base * pct / 100); $('#fuHint').textContent = '按上月總資金 '+money(base)+' × '+pct+'% 計'; }
+  };
+  $('#fuPct').addEventListener('input', calc);
+  setTimeout(() => $('#fuPct').focus(), 50);
+}
+function saveFund(){
+  const id = $('#modal').dataset.id, ym = $('#fuMonth').value;
+  if(!/^\d{4}-\d{2}$/.test(ym)) return toast('請揀月份');
+  const nid = 'fund-' + ym;
+  if(nid !== id && live().some(r => r.id === nid)) return toast('呢個月已經有記錄');
+  const pctS = $('#fuPct').value.trim(), amt = parseFloat($('#fuAmt').value), flow = parseFloat($('#fuFlow').value);
+  if(isNaN(amt) && !flow) return toast('請輸入 % 或金額');
+  if(id && id !== nid){ const old = DB.records.find(r => r.id === id); if(old) upsert({ id, date: old.date, item: old.item, amount: 0, cat: '旅行基金', type: 'fund', deleted: true }); }
+  const rec = { id: nid, date: ym+'-01', item: '旅行基金 '+Number(ym.slice(5))+'月', cat: '旅行基金', type: 'fund', amount: isNaN(amt) ? 0 : r2(amt) };
+  if(pctS !== '' && !isNaN(parseFloat(pctS))) rec.pct = parseFloat(pctS);
+  if(flow) rec.flow = r2(flow);
+  const nt = $('#fuNote').value.trim(); if(nt) rec.note = nt;
+  upsert(rec); persist(); closeEdit(); renderAll(); toast('已儲存');
+}
+function deleteFund(){
+  if(!editArm){ editArm = true; $('#fuDel').textContent = '再撳一次確認刪除'; return; }
+  const r = DB.records.find(x => x.id === $('#modal').dataset.id);
+  if(r) { upsert({ id: r.id, date: r.date, item: r.item, amount: 0, cat: '旅行基金', type: 'fund', deleted: true }); persist(); }
+  closeEdit(); renderAll(); toast('已刪除');
+}
+
 /* ================= export / import ================= */
 function download(name, blob){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
 function rowsFor(type){
@@ -766,7 +873,7 @@ function summaryRows(){
 function exportCsv(){
   const rows = live().sort((a,b) => a.date < b.date ? -1 : 1);
   const q = v => '"'+String(v ?? '').replace(/"/g,'""')+'"';
-  const csv = '﻿日期,項目,港元,人民幣,類別/存入人,類型,存入去,NOTE\n' + rows.map(r => [r.date, r.item, r.amount, r.rmb ?? '', catLabel(r.type, r.cat), TYPES[r.type] || r.type, r.acct || '', r.note||''].map(q).join(',')).join('\n');
+  const csv = '﻿日期,項目,港元,人民幣,類別/存入人,類型,存入去,NOTE\n' + rows.map(r => [r.date, r.item, r.amount, r.rmb ?? '', catLabel(r.type, r.cat), TYPES[r.type] || (r.type === 'fund' ? '旅行基金' : r.type), r.acct || '', r.note||''].map(q).join(',')).join('\n');
   download('home-expense-'+today()+'.csv', new Blob([csv], { type:'text/csv;charset=utf-8' }));
 }
 function loadScript(src){ return new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('載入失敗')); document.head.appendChild(s); }); }
@@ -781,6 +888,7 @@ async function exportXlsx(){
     add('每月總結', summaryRows(), [10,12,12,12,10,10,10,10,12,12,40]);
     add('傢私+電器', rowsFor('furniture'), [12,50,10,10,10,24]);
     add('裝修工程', rowsFor('reno'), [12,40,10,10,14,30]);
+    add('旅行基金', fundRows().rows.map(x => ({ '月份': x.r.date.slice(0,7), '利潤/虧損 %': x.r.pct ?? '', '利潤/虧損 (金額)': x.r.amount, '資金提取/存入': x.r.flow || '', '總資金': r2(x.bal), 'NOTE': x.r.note || '' })), [10,12,16,14,12,30]);
     XLSX.writeFile(wb, 'Home-Expense-'+today()+'.xlsx');
   } catch(e){ toast('匯出 Excel 失敗，可以用 CSV'); }
 }
@@ -825,6 +933,10 @@ document.addEventListener('click', e => {
   if(d.acct){ E.acct = d.acct; renderEntry(); return; }
   if(d.dquick){ E.item = d.dquick; E.cat = '其他'; E.type = 'deposit'; renderEntry(); return; }
   if(d.new){ openEdit(null, d.new); return; }
+  if(d.fund){ openFund(d.fund); return; }
+  if(d.fundnew){ openFund(null); return; }
+  if(t.id === 'fuSave'){ saveFund(); return; }
+  if(t.id === 'fuDel'){ deleteFund(); return; }
   if(d.quick){ E.item = E.item ? E.item + '、' + d.quick : d.quick; E.cat = set().cats[0]; E.type = 'daily'; renderEntry(); return; }
   if(d.edit){ openEdit(d.edit); return; }
   if(d.ym){ UI.statsYm = addYm(UI.statsYm, Number(d.ym)); renderStats(); return; }
@@ -859,6 +971,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const t = e.target;
   if(t.id === 'eDate'){ E.date = t.value || today(); renderEntry(); }
+  if(['fCap','fStart','fPay'].includes(t.id)){ const f = set().fund; if(t.id === 'fCap'){ const v = parseFloat(t.value); if(v >= 0) f.capital = v; } if(t.id === 'fStart' && t.value) f.start = t.value; if(t.id === 'fPay') f.payout = t.value.trim(); touchSettings(); persist(); renderList(); }
   if(t.id === 'mNote'){ const ym = UI.statsYm, v = t.value.trim(); DB.notes[ym] = { text: v, updatedAt: Date.now() }; persist(); toast('備註已儲存'); }
   if(t.dataset && t.dataset.fx != null){
     const f = set().fixed[Number(t.dataset.fx)], k = t.dataset.f;
@@ -870,7 +983,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('keydown', e => {
   const modal = $('#modal').classList.contains('on');
-  if(modal){ if(e.key === 'Escape') closeEdit(); if(e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); saveEdit(); } return; }
+  if(modal){ if(e.key === 'Escape') closeEdit(); if(e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); $('#modal').dataset.kind === 'fund' ? saveFund() : saveEdit(); } return; }
   const tag = e.target.tagName;
   if(e.target.id === 'eItem' && e.key === 'Enter'){ e.preventDefault(); if(E.expr) saveEntry(); else e.target.blur(); return; }
   if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.metaKey || e.ctrlKey || e.altKey) return;
