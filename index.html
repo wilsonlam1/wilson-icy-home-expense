@@ -122,6 +122,10 @@ nav.tabs svg{width:22px;height:22px}
 .fx input.field{height:38px;padding:0 8px;font-size:15px}
 .fx input[type=checkbox]{width:22px;height:22px;accent-color:var(--accent)}
 .x{border:0;background:none;font-size:18px;color:var(--muted);width:28px;height:38px}
+.opbar{display:flex;gap:6px;margin-top:-2px}
+.opbar button{flex:1;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--soft);font-size:18px;font-family:var(--serif);touch-action:manipulation}
+.calc-res{font-size:13px;color:var(--accent);font-weight:500;min-height:0}
+.calc-res.bad{color:var(--up)}
 
 /* modal + toast */
 .modal{position:fixed;inset:0;background:rgba(30,35,32,.4);display:none;align-items:flex-end;justify-content:center;z-index:50}
@@ -220,7 +224,25 @@ const money1 = n => money(n, 1);
 const r2 = n => Math.round(n*100)/100;
 const uid = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
 const color = c => COLORS[c] || PALETTE[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % PALETTE.length];
-function evalExpr(s){ if(!s) return 0; return String(s).split('+').reduce((t,p)=>{ const v = parseFloat(p); return isNaN(v) ? t : t+v; }, 0); }
+/* safe calculator: + − × ÷ and brackets, no eval(). Empty → 0, invalid → NaN */
+function evalExpr(s){
+  if(s == null) return 0;
+  let src = String(s).replace(/[×xX＊]/g,'*').replace(/[÷／]/g,'/').replace(/[－−–—]/g,'-').replace(/＋/g,'+').replace(/[（]/g,'(').replace(/[）]/g,')').replace(/[\s,，$]/g,'');
+  src = src.replace(/[-+*/(]+$/,'');
+  if(!src) return 0;
+  let i = 0;
+  const factor = () => {
+    if(src[i] === '-'){ i++; return -factor(); }
+    if(src[i] === '+'){ i++; return factor(); }
+    if(src[i] === '('){ i++; const v = expr(); if(src[i] === ')') i++; return v; }
+    const m = /^(\d+\.?\d*|\.\d+)/.exec(src.slice(i)); if(!m) throw 0;
+    i += m[0].length; return parseFloat(m[0]);
+  };
+  const term = () => { let v = factor(); while(src[i] === '*' || src[i] === '/'){ const op = src[i++]; const f = factor(); v = op === '*' ? v*f : v/f; } return v; };
+  const expr = () => { let v = term(); while(src[i] === '+' || src[i] === '-'){ const op = src[i++]; const t = term(); v = op === '+' ? v+t : v-t; } return v; };
+  try { const v = expr(); return (i < src.length || !isFinite(v)) ? NaN : v; } catch(e){ return NaN; }
+}
+const hasOp = s => /[-+*/×÷()]/.test(String(s||'').replace(/^-/,''));
 function lsGet(k, d){ try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch(e){ return d; } }
 function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch(e){ toast('本機儲存失敗：'+e.message); return false; } }
 let toastTimer;
@@ -694,10 +716,31 @@ function renderSettings(){
     <input type="file" id="dFile" accept=".json,application/json" class="sr" aria-label="揀 JSON 檔">
     <button type="button" class="btn danger small" id="dWipe" style="align-self:flex-start">清除本機資料</button>
   </div>
-  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.2</div>`;
+  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.3</div>`;
 }
 
 /* ================= edit modal ================= */
+function opBar(id){
+  return `<div class="opbar" role="group" aria-label="運算符號">${[['+','+','加'],['-','−','減'],['×','×','乘'],['÷','÷','除'],['(','(','左括號'],[')',')','右括號']].map(([ins,lbl,al]) => `<button type="button" data-op="${ins}" data-target="${id}" aria-label="${al}">${lbl}</button>`).join('')}</div>
+  <span></span><div class="calc-res" id="${id}Res"></div>`;
+}
+function showCalc(id){
+  const el = $('#'+id), out = $('#'+id+'Res'); if(!el || !out) return;
+  const v = el.value.trim();
+  if(!v || !hasOp(v)){ out.textContent = ''; out.className = 'calc-res'; return; }
+  const n = evalExpr(v);
+  if(isNaN(n)){ out.textContent = '算式未完成 / 唔啱'; out.className = 'calc-res bad'; }
+  else { out.textContent = '= HK$' + r2(n); out.className = 'calc-res'; }
+}
+function insertOp(id, op){
+  const el = $('#'+id); if(!el) return;
+  const st = el.selectionStart ?? el.value.length, en = el.selectionEnd ?? st;
+  el.value = el.value.slice(0, st) + op + el.value.slice(en);
+  const p = st + op.length; el.focus(); try{ el.setSelectionRange(p, p); }catch(_){}
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+// pointerdown + preventDefault keeps the phone keyboard open while tapping an operator
+document.addEventListener('pointerdown', e => { const b = e.target.closest('[data-op]'); if(!b) return; e.preventDefault(); insertOp(b.dataset.target, b.dataset.op); });
 let editArm = false, editNew = null;
 function catOptions(type, selected){
   const list = catsFor(type), all = list.includes(selected) || !selected ? list : [selected, ...list];
@@ -717,13 +760,15 @@ function openEdit(id, newType){
       <label for="mCat" id="mCatL">${r.type === 'deposit' ? '存入人' : '類別'}</label><select id="mCat" class="field">${catOptions(r.type, r.cat)}</select>
       <label for="mAcct" class="acctRow" ${r.type==='deposit'?'':'hidden'}>存入去</label><select id="mAcct" class="field acctRow" ${r.type==='deposit'?'':'hidden'}>${ACCTS.map(a => `<option ${a===(r.acct||'銀行戶口')?'selected':''}>${a}</option>`).join('')}</select>
       <label for="mItem">項目</label><input id="mItem" class="field" value="${esc(r.item)}">
-      <label for="mAmt">港元</label><input id="mAmt" class="field num" inputmode="decimal" value="${esc(r.calc || (r.amount || ''))}" style="font-size:18px">
-      <label for="mRmb">人民幣</label><input id="mRmb" class="field" inputmode="decimal" value="${esc(r.rmb ?? '')}" placeholder="選填：填咗會自動 × ${esc(s.rmbRate)}">
+      <label for="mAmt">港元</label><input id="mAmt" class="field num" inputmode="decimal" autocomplete="off" value="${esc(r.calc || (r.amount || ''))}" style="font-size:18px">
+      <span></span>${opBar('mAmt')}
+      <label for="mRmb">人民幣</label><input id="mRmb" class="field" inputmode="decimal" autocomplete="off" value="${esc(r.rmb ?? '')}" placeholder="選填：填咗會自動 × ${esc(s.rmbRate)}">
       <label for="mNoteR">備註</label><input id="mNoteR" class="field" value="${esc(r.note||'')}">
     </div>
     <div style="display:flex;gap:8px">${newType ? '' : '<button type="button" class="btn danger" id="mDel">刪除</button>'}<div style="flex-grow:1"></div><button type="button" class="btn" id="mCancel">取消</button><button type="button" class="btn primary" id="mSave">儲存</button></div>`;
   $('#modal').classList.add('on'); $('#modal').dataset.id = r.id;
-  const rmb = $('#mRmb'); rmb.addEventListener('input', () => { const v = evalExpr(rmb.value); if(v > 0) $('#mAmt').value = r2(v*(Number(s.rmbRate)||1.09)); });
+  const rmb = $('#mRmb'); rmb.addEventListener('input', () => { const v = evalExpr(rmb.value); if(v > 0){ $('#mAmt').value = r2(v*(Number(s.rmbRate)||1.09)); showCalc('mAmt'); } });
+  $('#mAmt').addEventListener('input', () => showCalc('mAmt')); showCalc('mAmt');
   $('#mType').addEventListener('change', () => {
     const t = $('#mType').value; $('#mCat').innerHTML = catOptions(t, null);
     $('#mCatL').textContent = t === 'deposit' ? '存入人' : '類別';
@@ -739,7 +784,7 @@ function saveEdit(){
   if(!(amt > 0) && !(type === 'furniture' || type === 'reno')) return toast('金額唔啱');
   const n = Object.assign({}, r, { date: $('#mDate').value || r.date, item: $('#mItem').value.trim() || $('#mCat').value, amount: r2(amt), type, cat: $('#mCat').value });
   if(type === 'deposit') n.acct = $('#mAcct').value; else delete n.acct;
-  if(amtStr.includes('+')) n.calc = amtStr; else delete n.calc;
+  if(hasOp(amtStr)) n.calc = amtStr; else delete n.calc;
   const rv = evalExpr($('#mRmb').value); if(rv > 0) n.rmb = r2(rv); else delete n.rmb;
   const nt = $('#mNoteR').value.trim(); if(nt) n.note = nt; else delete n.note;
   const wasNew = !!editNew;
