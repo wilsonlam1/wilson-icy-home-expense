@@ -198,6 +198,7 @@ const DEFAULT_SETTINGS = {
   depQuick: ['銀行回贈','旅行FUND','利息'],
   furnCats: ['傢私','電器'],
   renoCats: ['裝修','傢俬材料/工具'],
+  houseCats: ['首期/訂金','稅費/律師/佣金','貸款','按金','其他'],
   fund: { capital: 30000, start: '2025-12-01', payout: '每年12月1日' },
   fixed: [
     {id:'mortgage', name:'供樓', amount:20665, day:25, cat:'供樓', on:true, start:'2026-10'},
@@ -377,7 +378,7 @@ function go(tab){ UI.tab = tab; saveUI(); renderAll(); window.scrollTo(0,0); }
 /* ================= aggregates ================= */
 const PEOPLE = [['BO','Wilson (BO)'],['BB','Icy (BB)'],['其他','其他']];
 const ACCTS = ['銀行戶口','現金POOL'];
-const TYPES = { daily:'日常開支', fixed:'固定/帳單', deposit:'存入', furniture:'傢私+電器', reno:'裝修工程' };
+const TYPES = { daily:'日常開支', fixed:'固定/帳單', deposit:'存入', furniture:'傢私+電器', reno:'裝修工程', house:'買樓' };
 const personName = c => (PEOPLE.find(p => p[0] === c) || [c, c])[1];
 function catsFor(type){
   const s = set();
@@ -385,6 +386,7 @@ function catsFor(type){
   if(type === 'deposit') return PEOPLE.map(p => p[0]);
   if(type === 'furniture') return s.furnCats;
   if(type === 'reno') return s.renoCats;
+  if(type === 'house') return s.houseCats;
   return s.cats;
 }
 const catLabel = (type, c) => type === 'deposit' ? personName(c) : c;
@@ -394,7 +396,7 @@ function agg(ym, exTravel){
   for(const r of DB.records){
     if(r.deleted || r.date.slice(0,7) !== ym) continue;
     if(r.type === 'deposit'){ a.dep += r.amount; a.depBy[r.cat] = (a.depBy[r.cat]||0) + r.amount; const ac = r.acct || '銀行戶口'; a.depAcct[ac] = (a.depAcct[ac]||0) + r.amount; a.depRecs.push(r); continue; }
-    if(r.type === 'furniture' || r.type === 'reno' || r.type === 'fund') continue;   // one-off projects: kept out of monthly analysis
+    if(r.type === 'furniture' || r.type === 'reno' || r.type === 'fund' || r.type === 'house') continue;   // one-off projects: kept out of monthly analysis
     a.any = true;
     if(r.type === 'fixed'){ a.fixed += r.amount; a.fcats[r.cat] = (a.fcats[r.cat]||0) + r.amount; a.fixedRecs.push(r); continue; }
     if(exTravel && r.cat === '旅行') continue;
@@ -430,7 +432,7 @@ function renderEntry(){
   const dep = E.type === 'deposit';
   const cats = catsFor(E.type);
   if(!cats.includes(E.cat)) E.cat = cats[0];
-  const dayRecs = live().filter(r => r.date === E.date && r.type !== 'furniture' && r.type !== 'reno' && r.type !== 'fund').sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+  const dayRecs = live().filter(r => r.date === E.date && r.type !== 'furniture' && r.type !== 'reno' && r.type !== 'fund' && r.type !== 'house').sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
   const dayTotal = dayRecs.filter(isExpense).reduce((t,r) => t + r.amount, 0);
   const dayDep = dayRecs.filter(r => !isExpense(r)).reduce((t,r) => t + r.amount, 0);
   const showRes = E.rmb || E.expr.includes('+');
@@ -478,7 +480,7 @@ function renderEntry(){
 }
 function rowHtml(r, showDate){
   const dep = r.type === 'deposit';
-  const tag = r.type === 'fixed' ? ' · 固定' : r.type === 'furniture' ? ' · 傢私+電器' : r.type === 'reno' ? ' · 裝修' : '';
+  const tag = r.type === 'fixed' ? ' · 固定' : r.type === 'furniture' ? ' · 傢私+電器' : r.type === 'reno' ? ' · 裝修' : r.type === 'house' ? ' · 買樓' : '';
   return `<button type="button" class="row" data-edit="${esc(r.id)}">
     <span class="dot" style="background:${color(r.cat)}"></span>
     <span class="grow"><span class="ell">${esc(r.item || r.cat)}</span><span class="sub">${showDate ? esc(r.date.slice(5).replace('-','/'))+' · ' : ''}${dep ? esc(personName(r.cat))+' → '+esc(r.acct||'銀行戶口') : esc(r.cat)+tag}${r.rmb?' · ¥'+r.rmb:''}${r.auto?' · 自動':''}</span></span>
@@ -520,33 +522,33 @@ function saveEntry(){
 
 /* ================= render: stats ================= */
 function cumCard(ym){
-  // period = first month that has daily/fixed records → the month being viewed
+  // everything up to the end of the viewed month (旅行基金 is a separate investment, not counted)
+  const end = ym + '-31';
+  const t = { daily:0, fixed:0, house:0, furniture:0, reno:0, deposit:0 };
   let first = null;
-  for(const r of DB.records) if(!r.deleted && (r.type === 'daily' || r.type === 'fixed')){ const m = r.date.slice(0,7); if(!first || m < first) first = m; }
-  if(!first || first > ym) return '';
-  let daily = 0, fixed = 0, dep = 0, n = 0, best = null, worst = null;
-  for(let m = first; m <= ym; m = addYm(m, 1)){
-    const a = agg(m); daily += a.daily; fixed += a.fixed; dep += a.dep; n++;
-    const net = a.dep - a.total;
-    if(!best || net > best.v) best = { m, v: net };
-    if(!worst || net < worst.v) worst = { m, v: net };
+  for(const r of DB.records){
+    if(r.deleted || r.type === 'fund' || r.date > end || !(r.type in t)) continue;
+    t[r.type] += Number(r.amount) || 0;
+    const m = r.date.slice(0,7); if(!first || m < first) first = m;
   }
-  const spend = daily + fixed, saved = dep - spend, rate = dep ? saved / dep : 0, cur = ym === thisYm();
-  const sgn = v => (v >= 0 ? '+' : '−') + money(Math.abs(v));
+  if(!first) return '';
+  const oneOff = t.house + t.furniture + t.reno, spend = t.daily + t.fixed + oneOff, bal = t.deposit - spend;
+  const months = (Number(ym.slice(0,4)) - Number(first.slice(0,4)))*12 + Number(ym.slice(5)) - Number(first.slice(5)) + 1;
+  const cur = ym === thisYm();
+  const sgn = v => (v >= 0 ? '+' : '−') + money(Math.abs(v), 2);
+  const line = (l, v, strong) => `<div style="display:flex;justify-content:space-between;gap:8px${strong ? ';font-weight:700' : ''}"><span class="${strong ? '' : 'muted'}">${l}</span><span class="num">${money(v, 2)}</span></div>`;
   return `<div class="card sec">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2>累計（全部月份）</h2><span class="muted" style="font-size:12px">${ymLabel(first)} – ${ymLabel(ym)} · ${n} 個月</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2>累計（全部記錄）</h2><span class="muted" style="font-size:12px">${ymLabel(first)} – ${ymLabel(ym)} · ${months} 個月</span></div>
     <div class="g2">
-      <div class="card tile" style="background:var(--field)"><div class="muted" style="font-size:12px">累計支出</div><div class="v" style="font-size:22px">${money(spend)}</div><div class="s muted">每月平均 ${money(spend/n)}</div></div>
-      <div class="hero" style="padding:12px;gap:2px;border-radius:14px"><div class="lbl">累計儲蓄（存入 − 支出）</div><div class="num ${saved >= 0 ? 'down' : 'up'}" style="font-size:22px;font-weight:700">${sgn(saved)}</div><div class="lbl">每月平均 ${sgn(saved/n)}</div></div>
+      <div class="card tile" style="background:var(--field)"><div class="muted" style="font-size:12px">累計支出</div><div class="v" style="font-size:21px">${money(spend)}</div><div class="s muted">連買樓、傢私電器、裝修</div></div>
+      <div class="hero" style="padding:12px;gap:2px;border-radius:14px"><div class="lbl">累計儲蓄（存入 − 支出）</div><div class="num ${bal >= 0 ? 'down' : 'up'}" style="font-size:21px;font-weight:700">${sgn(bal)}</div><div class="lbl">即係戶口結餘</div></div>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px;font-size:14px">
-      <div style="display:flex;justify-content:space-between"><span class="muted">支出：日常 + 固定</span><span class="num">${money(daily)} + ${money(fixed)}</span></div>
-      <div style="display:flex;justify-content:space-between"><span class="muted">同期累計存入</span><span class="num">${money(dep)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-weight:700;border-top:1px solid var(--line2);padding-top:8px"><span>儲蓄率（儲蓄 ÷ 存入）</span><span class="num ${rate >= 0 ? 'down' : 'up'}">${(rate*100).toFixed(1)}%</span></div>
-      <div class="bar"><i style="width:${Math.max(0, Math.min(100, rate*100)).toFixed(1)}%;background:var(--accent)"></i></div>
-      ${n > 1 ? `<div class="muted" style="font-size:12px">結餘最多：${ymLabel(best.m)} ${sgn(best.v)} · 最少：${ymLabel(worst.m)} ${sgn(worst.v)}</div>` : ''}
+      ${line('日常開支', t.daily)}${line('固定開支', t.fixed)}${line('買樓', t.house)}${line('傢私+電器', t.furniture)}${line('裝修工程', t.reno)}
+      <div style="border-top:1px solid var(--line2);padding-top:6px">${line('累計支出', spend, true)}</div>
+      ${line('累計存入', t.deposit, true)}
     </div>
-    <div class="muted" style="font-size:12px;line-height:1.6">由有日常/固定開支記錄嗰個月開始計，同期嘅存入先計入；唔包括傢私+電器、裝修工程同旅行基金。${cur ? '本月仲未完，計入嘅係截至今日嘅數。' : ''}</div>
+    <div class="muted" style="font-size:12px;line-height:1.6">結餘應該同 Excel「支出」表底嘅 Balance 一致。唔包括旅行基金。${cur ? '本月仲未完，計入嘅係截至今日嘅數。' : ''}</div>
   </div>`;
 }
 function depCard(ym){
@@ -641,7 +643,7 @@ function renderStats(){
 function renderList(){
   if(UI.listType === 'fund') return renderFund();
   const q = UI.q.trim().toLowerCase(), ym = UI.listYm, lt = UI.listType;
-  const project = lt === 'furniture' || lt === 'reno';
+  const project = lt === 'furniture' || lt === 'reno' || lt === 'house';
   let rs = live().filter(r => (lt === 'all' ? r.type !== 'fund' : r.type === lt));
   if(q) rs = rs.filter(r => (r.item+' '+r.cat+' '+(r.note||'')+' '+personName(r.cat)).toLowerCase().includes(q));
   else if(!project) rs = rs.filter(r => r.date.slice(0,7) === ym);
@@ -687,6 +689,7 @@ function renderList(){
   ${project ? '' : `<div style="display:flex;justify-content:center;gap:4px;align-items:center;padding:14px 0 4px;font-size:13px" class="muted">其他記錄：
     <button type="button" class="btn small" data-lt="furniture" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">傢私+電器</button>·
     <button type="button" class="btn small" data-lt="reno" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">裝修工程</button>·
+    <button type="button" class="btn small" data-lt="house" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">買樓</button>·
     <button type="button" class="btn small" data-lt="fund" style="height:32px;background:none;border:0;color:var(--accent);text-decoration:underline">旅行基金</button></div>`}`;
 }
 
@@ -732,12 +735,13 @@ function renderSettings(){
     <label for="sDQuick" class="muted" style="font-size:13px">存入「其他」快捷鍵（例如回贈、旅行FUND）</label><input id="sDQuick" class="field" value="${esc(s.depQuick.join(', '))}">
     <label for="sFurn" class="muted" style="font-size:13px">傢私+電器類別</label><input id="sFurn" class="field" value="${esc(s.furnCats.join(', '))}">
     <label for="sReno" class="muted" style="font-size:13px">裝修工程類別</label><input id="sReno" class="field" value="${esc(s.renoCats.join(', '))}">
+    <label for="sHouse" class="muted" style="font-size:13px">買樓類別</label><input id="sHouse" class="field" value="${esc(s.houseCats.join(', '))}">
     <div style="display:flex;align-items:center;gap:12px"><label for="sRate" style="font-size:14px;flex-grow:1">人民幣匯率（¥ → HK$）</label><input id="sRate" class="field" style="width:100px" inputmode="decimal" value="${esc(s.rmbRate)}"></div>
   </div>
 
   <div class="card sec">
     <h2>資料</h2>
-    <div class="muted" style="font-size:13px;line-height:1.6">本機共 ${live().length} 筆記錄：日常 ${count('daily')} · 固定 ${count('fixed')} · 存入 ${count('deposit')} · 傢私+電器 ${count('furniture')} · 裝修 ${count('reno')} · 旅行基金 ${count('fund')} 個月</div>
+    <div class="muted" style="font-size:13px;line-height:1.6">本機共 ${live().length} 筆記錄：日常 ${count('daily')} · 固定 ${count('fixed')} · 存入 ${count('deposit')} · 傢私+電器 ${count('furniture')} · 裝修 ${count('reno')} · 買樓 ${count('house')} · 旅行基金 ${count('fund')} 個月</div>
     <div class="g2">
       <button type="button" class="btn" id="dImport">匯入 JSON</button>
       <button type="button" class="btn" id="dJson">匯出 JSON 備份</button>
@@ -747,7 +751,7 @@ function renderSettings(){
     <input type="file" id="dFile" accept=".json,application/json" class="sr" aria-label="揀 JSON 檔">
     <button type="button" class="btn danger small" id="dWipe" style="align-self:flex-start">清除本機資料</button>
   </div>
-  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.4</div>`;
+  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.5</div>`;
 }
 
 /* ================= edit modal ================= */
@@ -964,6 +968,7 @@ async function exportXlsx(){
     add('每月總結', summaryRows(), [10,12,12,12,10,10,10,10,12,12,40]);
     add('傢私+電器', rowsFor('furniture'), [12,50,10,10,10,24]);
     add('裝修工程', rowsFor('reno'), [12,40,10,10,14,30]);
+    add('買樓', rowsFor('house'), [12,40,12,10,16,40]);
     add('旅行基金', fundRows().rows.map(x => ({ '月份': x.r.date.slice(0,7), '利潤/虧損 %': x.r.pct ?? '', '利潤/虧損 (金額)': x.r.amount, '資金提取/存入': x.r.flow || '', '總資金': r2(x.bal), 'NOTE': x.r.note || '' })), [10,12,16,14,12,30]);
     XLSX.writeFile(wb, 'Home-Expense-'+today()+'.xlsx');
   } catch(e){ toast('匯出 Excel 失敗，可以用 CSV'); }
@@ -994,7 +999,7 @@ function saveSettingsFromForm(){
   const s = set(), list = v => v.split(/[,，、]/).map(x => x.trim()).filter(Boolean);
   const c = list($('#sCats').value), fc = list($('#sFCats').value), q = list($('#sQuick').value), rate = parseFloat($('#sRate').value);
   if(c.length) s.cats = c; if(fc.length) s.fixedCats = fc; s.quick = q; if(rate > 0) s.rmbRate = rate;
-  s.depQuick = list($('#sDQuick').value); const fu = list($('#sFurn').value), re = list($('#sReno').value); if(fu.length) s.furnCats = fu; if(re.length) s.renoCats = re;
+  s.depQuick = list($('#sDQuick').value); const fu = list($('#sFurn').value), re = list($('#sReno').value); if(fu.length) s.furnCats = fu; if(re.length) s.renoCats = re; const ho = list($('#sHouse').value); if(ho.length) s.houseCats = ho;
   touchSettings(); persist();
 }
 
@@ -1054,7 +1059,7 @@ document.addEventListener('change', e => {
     if(k === 'on') f.on = t.checked; else if(k === 'amount') f.amount = parseFloat(t.value) || 0; else if(k === 'day') f.day = Math.min(31, Math.max(1, parseInt(t.value) || 1)); else f[k] = t.value.trim();
     touchSettings(); persist(); postFixed(); renderSettings();
   }
-  if(['sCats','sFCats','sQuick','sRate','sDQuick','sFurn','sReno'].includes(t.id)){ saveSettingsFromForm(); }
+  if(['sCats','sFCats','sQuick','sRate','sDQuick','sFurn','sReno','sHouse'].includes(t.id)){ saveSettingsFromForm(); }
   if(t.id === 'dFile' && t.files[0]){ importJson(t.files[0]); t.value = ''; }
 });
 document.addEventListener('keydown', e => {
