@@ -519,6 +519,36 @@ function saveEntry(){
 }
 
 /* ================= render: stats ================= */
+function cumCard(ym){
+  // period = first month that has daily/fixed records → the month being viewed
+  let first = null;
+  for(const r of DB.records) if(!r.deleted && (r.type === 'daily' || r.type === 'fixed')){ const m = r.date.slice(0,7); if(!first || m < first) first = m; }
+  if(!first || first > ym) return '';
+  let daily = 0, fixed = 0, dep = 0, n = 0, best = null, worst = null;
+  for(let m = first; m <= ym; m = addYm(m, 1)){
+    const a = agg(m); daily += a.daily; fixed += a.fixed; dep += a.dep; n++;
+    const net = a.dep - a.total;
+    if(!best || net > best.v) best = { m, v: net };
+    if(!worst || net < worst.v) worst = { m, v: net };
+  }
+  const spend = daily + fixed, saved = dep - spend, rate = dep ? saved / dep : 0, cur = ym === thisYm();
+  const sgn = v => (v >= 0 ? '+' : '−') + money(Math.abs(v));
+  return `<div class="card sec">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2>累計（全部月份）</h2><span class="muted" style="font-size:12px">${ymLabel(first)} – ${ymLabel(ym)} · ${n} 個月</span></div>
+    <div class="g2">
+      <div class="card tile" style="background:var(--field)"><div class="muted" style="font-size:12px">累計支出</div><div class="v" style="font-size:22px">${money(spend)}</div><div class="s muted">每月平均 ${money(spend/n)}</div></div>
+      <div class="hero" style="padding:12px;gap:2px;border-radius:14px"><div class="lbl">累計儲蓄（存入 − 支出）</div><div class="num ${saved >= 0 ? 'down' : 'up'}" style="font-size:22px;font-weight:700">${sgn(saved)}</div><div class="lbl">每月平均 ${sgn(saved/n)}</div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;font-size:14px">
+      <div style="display:flex;justify-content:space-between"><span class="muted">支出：日常 + 固定</span><span class="num">${money(daily)} + ${money(fixed)}</span></div>
+      <div style="display:flex;justify-content:space-between"><span class="muted">同期累計存入</span><span class="num">${money(dep)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:700;border-top:1px solid var(--line2);padding-top:8px"><span>儲蓄率（儲蓄 ÷ 存入）</span><span class="num ${rate >= 0 ? 'down' : 'up'}">${(rate*100).toFixed(1)}%</span></div>
+      <div class="bar"><i style="width:${Math.max(0, Math.min(100, rate*100)).toFixed(1)}%;background:var(--accent)"></i></div>
+      ${n > 1 ? `<div class="muted" style="font-size:12px">結餘最多：${ymLabel(best.m)} ${sgn(best.v)} · 最少：${ymLabel(worst.m)} ${sgn(worst.v)}</div>` : ''}
+    </div>
+    <div class="muted" style="font-size:12px;line-height:1.6">由有日常/固定開支記錄嗰個月開始計，同期嘅存入先計入；唔包括傢私+電器、裝修工程同旅行基金。${cur ? '本月仲未完，計入嘅係截至今日嘅數。' : ''}</div>
+  </div>`;
+}
 function depCard(ym){
   const a = agg(ym), p = agg(addYm(ym,-1)), T = depTotals();
   const net = a.dep - a.total;
@@ -603,7 +633,8 @@ function renderStats(){
       </div>
     </div>
   </div>
-  ${depCard(ym)}`;
+  ${depCard(ym)}
+  ${cumCard(ym)}`;
 }
 
 /* ================= render: list ================= */
@@ -716,7 +747,7 @@ function renderSettings(){
     <input type="file" id="dFile" accept=".json,application/json" class="sr" aria-label="揀 JSON 檔">
     <button type="button" class="btn danger small" id="dWipe" style="align-self:flex-start">清除本機資料</button>
   </div>
-  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.3</div>`;
+  <div class="muted" style="font-size:11px;text-align:center;padding:8px 0 4px">WILSON-ICY HOME EXPENSE · v1.4</div>`;
 }
 
 /* ================= edit modal ================= */
